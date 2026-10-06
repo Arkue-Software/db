@@ -1,0 +1,156 @@
+# Bases aisladas por servicio. Identidad y Campañas tienen migraciones listas;
+# Donación e Institucional se provisionan vacías hasta recibir sus esquemas.
+services:
+  db-identidad:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: db_identidad
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superusuario_identidad
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      ROLES_PREFIJO: identidad
+    secrets:
+      - postgres_superusuario_identidad
+      - identidad_propietario
+      - identidad_servicio
+    volumes:
+      - identidad-data:/var/lib/postgresql/data
+      - ./identidad/00_roles.sql:/roles/00_roles.sql:ro
+      - ./init/roles.sh:/docker-entrypoint-initdb.d/roles.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "db_identidad"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [identidad-data]
+
+  migracion-identidad:
+    image: flyway/flyway:11
+    depends_on:
+      db-identidad:
+        condition: service_healthy
+    secrets: [identidad_propietario]
+    volumes:
+      - ./identidad/migraciones:/flyway/sql:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export FLYWAY_PASSWORD="$(cat /run/secrets/identidad_propietario)"
+        exec flyway \
+          -url=jdbc:postgresql://db-identidad:5432/db_identidad \
+          -user=identidad_propietario \
+          -locations=filesystem:/flyway/sql \
+          -validateMigrationNaming=true \
+          migrate
+    networks: [identidad-data]
+
+  db-campana:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: db_campana
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superusuario_campana
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      ROLES_PREFIJO: campana
+    secrets:
+      - postgres_superusuario_campana
+      - campana_propietario
+      - campana_servicio
+    volumes:
+      - campana-data:/var/lib/postgresql/data
+      - ./campanas/00_roles.sql:/roles/00_roles.sql:ro
+      - ./init/roles.sh:/docker-entrypoint-initdb.d/roles.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "db_campana"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [campana-data]
+
+  migracion-campana:
+    image: flyway/flyway:11
+    depends_on:
+      db-campana:
+        condition: service_healthy
+    secrets: [campana_propietario]
+    volumes:
+      - ./campanas/migraciones:/flyway/sql:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export FLYWAY_PASSWORD="$(cat /run/secrets/campana_propietario)"
+        exec flyway \
+          -url=jdbc:postgresql://db-campana:5432/db_campana \
+          -user=campana_propietario \
+          -locations=filesystem:/flyway/sql \
+          -validateMigrationNaming=true \
+          migrate
+    networks: [campana-data]
+
+  db-donacion:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: db_donacion
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superusuario_donacion
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets: [postgres_superusuario_donacion]
+    volumes:
+      - donacion-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "db_donacion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [donacion-data]
+
+  db-institucional:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: db_institucional
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superusuario_institucional
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets: [postgres_superusuario_institucional]
+    volumes:
+      - institucional-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "db_institucional"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [institucional-data]
+
+secrets:
+  postgres_superusuario_identidad:
+    file: ./secretos/postgres_superusuario_identidad
+  identidad_propietario:
+    file: ./secretos/identidad_propietario
+  identidad_servicio:
+    file: ./secretos/identidad_servicio
+  postgres_superusuario_campana:
+    file: ./secretos/postgres_superusuario_campana
+  campana_propietario:
+    file: ./secretos/campana_propietario
+  campana_servicio:
+    file: ./secretos/campana_servicio
+  postgres_superusuario_donacion:
+    file: ./secretos/postgres_superusuario_donacion
+  postgres_superusuario_institucional:
+    file: ./secretos/postgres_superusuario_institucional
+
+volumes:
+  identidad-data:
+  campana-data:
+  donacion-data:
+  institucional-data:
+
+networks:
+  identidad-data:
+    name: "${DB_IDENTIDAD_NETWORK:-redvital_identidad_data}"
+    internal: true
+  campana-data:
+    name: "${DB_CAMPANA_NETWORK:-redvital_campana_data}"
+    internal: true
+  donacion-data:
+    name: "${DB_DONACION_NETWORK:-redvital_donacion_data}"
+    internal: true
+  institucional-data:
+    name: "${DB_INSTITUCIONAL_NETWORK:-redvital_institucional_data}"
+    internal: true

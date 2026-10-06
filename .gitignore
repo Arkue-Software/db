@@ -1,0 +1,11 @@
+# Local credentials and environment configuration
+secretos/
+.env
+.env.*
+!.env.example
+
+# Local database and generated output
+*.dump
+*.sql.gz
+bin/
+obj/

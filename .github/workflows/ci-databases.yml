@@ -1,0 +1,88 @@
+name: Database migrations and permissions
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "identidad/**/*.sql"
+      - "campanas/**/*.sql"
+      - "init/**"
+      - "pruebas/**"
+      - "docker-compose.migraciones.yml"
+      - ".github/workflows/ci-databases.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate local test credentials
+        run: |
+          mkdir -p secretos
+          for name in \
+            postgres_superusuario_identidad identidad_propietario identidad_servicio \
+            postgres_superusuario_campana campana_propietario campana_servicio \
+            postgres_superusuario_donacion postgres_superusuario_institucional
+          do
+            openssl rand -hex 32 > "secretos/$name"
+          done
+          mask_credentials() {
+            for name in \
+              postgres_superusuario_identidad identidad_propietario identidad_servicio \
+              postgres_superusuario_campana campana_propietario campana_servicio \
+              postgres_superusuario_donacion postgres_superusuario_institucional
+            do
+              echo "::add-mask::$(cat "secretos/$name")"
+            done
+          }
+          mask_credentials
+          {
+            printf 'PASS_IDENT_PROP=%s\n' "$(cat secretos/identidad_propietario)"
+            printf 'PASS_IDENT_SERV=%s\n' "$(cat secretos/identidad_servicio)"
+            printf 'PASS_CAMP_PROP=%s\n' "$(cat secretos/campana_propietario)"
+            printf 'PASS_CAMP_SERV=%s\n' "$(cat secretos/campana_servicio)"
+            printf 'PASS_DONACION_ADMIN=%s\n' "$(cat secretos/postgres_superusuario_donacion)"
+            printf 'PASS_INSTITUCIONAL_ADMIN=%s\n' "$(cat secretos/postgres_superusuario_institucional)"
+          } > secretos/verificador.env
+
+      - name: Start the four isolated PostgreSQL databases
+        run: |
+          docker compose -f docker-compose.migraciones.yml up -d --wait \
+            db-identidad db-campana db-donacion db-institucional
+
+      - name: Apply Identity and Campaign migrations
+        run: |
+          docker compose -f docker-compose.migraciones.yml run --rm --no-deps migracion-identidad
+          docker compose -f docker-compose.migraciones.yml run --rm --no-deps migracion-campana
+
+      - name: Verify schemas, isolation, and permissions
+        run: |
+          fallos=0
+          run_verifier() {
+            scope=$1
+            network=$2
+            hostname=$3
+            prefix=$4
+            docker run --rm \
+              --network "$network" \
+              --mount "type=bind,source=$GITHUB_WORKSPACE/pruebas,target=/pruebas,readonly" \
+              --env-file "$GITHUB_WORKSPACE/secretos/verificador.env" \
+              -e "DB_SCOPE=$scope" \
+              -e "${prefix}_HOST=$hostname" \
+              -e "${prefix}_PORT=5432" \
+              postgres:16 bash /pruebas/verificar-fase1.sh
+          }
+
+          run_verifier identidad redvital_identidad_data db-identidad DB_IDENTIDAD || fallos=$((fallos+1))
+          run_verifier campana redvital_campana_data db-campana DB_CAMPANA || fallos=$((fallos+1))
+          run_verifier donacion redvital_donacion_data db-donacion DB_DONACION || fallos=$((fallos+1))
+          run_verifier institucional redvital_institucional_data db-institucional DB_INSTITUCIONAL || fallos=$((fallos+1))
+          exit "$fallos"
+
+      - name: Stop databases
+        if: always()
+        run: |
+          docker compose -f docker-compose.migraciones.yml down --volumes --remove-orphans
