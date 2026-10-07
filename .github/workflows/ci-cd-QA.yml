@@ -2,7 +2,7 @@ name: CI/CD Bases de datos RedVital
 
 on:
   push:
-    branches: ["main"]
+    branches: 'release/**'
   workflow_dispatch:
 
 permissions:
