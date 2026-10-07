@@ -85,11 +85,30 @@ Los archivos de `secretos/` están excluidos del control de versiones. En un
 volumen ya inicializado, cambiar esos archivos no rota automáticamente las
 contraseñas almacenadas por PostgreSQL.
 
-El script `pruebas/verificar-fase1.sh` se ejecuta dentro de un contenedor
-conectado a una sola red de datos; no se conecta desde el host ni comparte una
-red de base entre servicios. El CI crea un cliente efímero por red y ejecuta
-los alcances `identidad`, `campana`, `donacion` e `institucional`, pasando las
-credenciales locales desde archivos ignorados por Git.
+## Despliegue con GitHub Actions
+
+El workflow `.github/workflows/ci-cd-QA.yml` se ejecuta al hacer push a `main`
+o manualmente desde GitHub Actions. El runner `self-hosted` debe ser Ubuntu
+con Docker instalado y permisos para ejecutar `docker`.
+
+El CI construye las imágenes de Identidad y Campañas y comprueba en contenedores
+efímeros que la inicialización crea sus roles y permite autenticarlos. Si pasa,
+el CD despliega `db-identidad` y `db-campana` en las redes Docker aisladas
+`redvital_identidad_data` y `redvital_campana_data`, con volúmenes persistentes
+del mismo nombre. No se publican puertos PostgreSQL en el host. Los servicios
+que necesiten conectarse deben unirse únicamente a la red que les corresponde.
+
+Configura estos GitHub Actions Secrets antes de ejecutar el despliegue:
+`POSTGRES_IDENTIDAD_PASSWORD`, `IDENTIDAD_PROPIETARIO_PASSWORD`,
+`IDENTIDAD_SERVICIO_PASSWORD`, `POSTGRES_CAMPANA_PASSWORD`,
+`CAMPANA_PROPIETARIO_PASSWORD` y `CAMPANA_SERVICIO_PASSWORD`. Docker conserva las credenciales como variables
+de entorno del contenedor para que pueda reiniciarse; por ello, limita el acceso
+al daemon Docker a administradores de confianza. Cambiar un secret no rota las
+credenciales dentro de una base ya inicializada; la rotación debe hacerse
+explícitamente en PostgreSQL y en los secrets correspondientes.
+
+Este workflow despliega únicamente las dos bases construidas en este repositorio;
+no ejecuta migraciones Flyway ni despliega los servicios de aplicación.
 
 ## Reglas de cambio
 

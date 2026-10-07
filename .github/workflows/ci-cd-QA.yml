@@ -1,58 +1,185 @@
-name: CI/CD Pipeline en Self-Hosted VM
+name: CI/CD Bases de datos RedVital
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redvital-database-deployment
+  cancel-in-progress: false
 
 jobs:
-  # ==========================================
-  # FASE 1: CI (Integración Continua y Pruebas)
-  # ==========================================
-  ci-tests:
+  ci:
+    name: Build y prueba de imágenes
     runs-on: self-hosted
     steps:
-      - name: 📥 Checkout del código
+      - name: Descargar el código
         uses: actions/checkout@v4
 
-      - name: 🔨 Construir imágenes de Docker (Prueba de build)
+      - name: Construir imágenes PostgreSQL
         run: |
-          docker build -t app-campanas-test ./campanas
-          docker build -t app-identidad-test ./identidad
+          docker build -f identidad/Dockerfile -t redvital-db-identidad:"$GITHUB_SHA" .
+          docker build -f campanas/Dockerfile -t redvital-db-campana:"$GITHUB_SHA" .
 
-      - name: 🧪 Ejecutar pruebas (verificar-fase1.sh)
+      - name: Probar inicialización de ambas bases
+        shell: bash
         run: |
-          chmod +x pruebas/verificar-fase1.sh
-          # Ejecuta el script de pruebas de tu proyecto
-          ./pruebas/verificar-fase1.sh
+          set -euo pipefail
 
-  # ==========================================
-  # FASE 2: CD (Despliegue Continuo)
-  # ==========================================
-  cd-deploy:
+          cleanup() {
+            docker rm -f ci-db-identidad ci-db-campana >/dev/null 2>&1 || true
+            docker network rm ci-redvital-identidad ci-redvital-campana >/dev/null 2>&1 || true
+          }
+          cleanup
+          trap cleanup EXIT
+
+          for service in identidad campana; do
+            if [ "$service" = identidad ]; then
+              db=db_identidad
+              image="redvital-db-identidad:$GITHUB_SHA"
+              network=ci-redvital-identidad
+              owner=identidad_propietario
+              role_service=identidad_servicio
+            else
+              db=db_campana
+              image="redvital-db-campana:$GITHUB_SHA"
+              network=ci-redvital-campana
+              owner=campana_propietario
+              role_service=campana_servicio
+            fi
+
+            docker network create "$network"
+            docker run -d \
+              --name "ci-db-$service" \
+              --network "$network" \
+              -e POSTGRES_DB="$db" \
+              -e POSTGRES_PASSWORD=ci-postgres-password \
+              -e ROLES_PREFIJO="$service" \
+              -e ROLES_PASSWORD_PROPIETARIO=ci-owner-password \
+              -e ROLES_PASSWORD_SERVICIO=ci-service-password \
+              "$image"
+
+            for attempt in $(seq 1 30); do
+              if docker exec "ci-db-$service" pg_isready -U postgres -d "$db" >/dev/null 2>&1; then
+                break
+              fi
+              if [ "$attempt" -eq 30 ]; then
+                docker logs "ci-db-$service"
+                echo "La base $db no quedó lista." >&2
+                exit 1
+              fi
+              sleep 2
+            done
+
+            for role in "$owner" "$role_service"; do
+              if [ "$role" = "$owner" ]; then
+                role_password=ci-owner-password
+              else
+                role_password=ci-service-password
+              fi
+              if ! docker exec -e "PGPASSWORD=$role_password" \
+                "ci-db-$service" \
+                psql -h 127.0.0.1 -U "$role" -d "$db" -v ON_ERROR_STOP=1 -c "SELECT 1" >/dev/null; then
+                docker logs "ci-db-$service"
+                echo "No se pudo autenticar el rol $role en $db." >&2
+                exit 1
+              fi
+            done
+          done
+
+  deploy:
+    name: Desplegar en la VM Ubuntu
     runs-on: self-hosted
-    needs: ci-tests # IMPORTANTE: Solo se ejecuta si el job "ci-tests" fue exitoso
-    
+    needs: ci
+    if: github.ref == 'refs/heads/main'
     steps:
-      - name: 📥 Checkout del código
+      - name: Descargar el código
         uses: actions/checkout@v4
 
-      - name: 🛑 Detener y limpiar contenedores anteriores
+      - name: Validar credenciales de despliegue
+        shell: bash
+        env:
+          POSTGRES_IDENTIDAD_PASSWORD: ${{ secrets.POSTGRES_IDENTIDAD_PASSWORD }}
+          IDENTIDAD_PROPIETARIO_PASSWORD: ${{ secrets.IDENTIDAD_PROPIETARIO_PASSWORD }}
+          IDENTIDAD_SERVICIO_PASSWORD: ${{ secrets.IDENTIDAD_SERVICIO_PASSWORD }}
+          POSTGRES_CAMPANA_PASSWORD: ${{ secrets.POSTGRES_CAMPANA_PASSWORD }}
+          CAMPANA_PROPIETARIO_PASSWORD: ${{ secrets.CAMPANA_PROPIETARIO_PASSWORD }}
+          CAMPANA_SERVICIO_PASSWORD: ${{ secrets.CAMPANA_SERVICIO_PASSWORD }}
         run: |
-          docker stop campanas_app identidad_app || true
-          docker rm campanas_app identidad_app || true
+          set -euo pipefail
+          for name in \
+            POSTGRES_IDENTIDAD_PASSWORD IDENTIDAD_PROPIETARIO_PASSWORD IDENTIDAD_SERVICIO_PASSWORD \
+            POSTGRES_CAMPANA_PASSWORD CAMPANA_PROPIETARIO_PASSWORD CAMPANA_SERVICIO_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "Falta configurar el secret de GitHub: $name" >&2
+              exit 1
+            fi
+          done
 
-      - name: 🚀 Desplegar contenedores a producción
+      - name: Construir imágenes de despliegue
         run: |
-          # Usamos las imágenes que sabemos que construyeron bien
-          docker build -t app-campanas ./campanas
-          docker build -t app-identidad ./identidad
-          
-          # Levantar los contenedores
-          docker run -d --name campanas_app -p 8080:80 app-campanas
-          docker run -d --name identidad_app -p 8081:80 app-identidad
+          docker build -f identidad/Dockerfile -t redvital-db-identidad:"$GITHUB_SHA" .
+          docker build -f campanas/Dockerfile -t redvital-db-campana:"$GITHUB_SHA" .
 
-      - name: ⚙️ Configurar base de datos y roles
+      - name: Desplegar contenedores PostgreSQL
+        shell: bash
+        env:
+          POSTGRES_IDENTIDAD_PASSWORD: ${{ secrets.POSTGRES_IDENTIDAD_PASSWORD }}
+          IDENTIDAD_PROPIETARIO_PASSWORD: ${{ secrets.IDENTIDAD_PROPIETARIO_PASSWORD }}
+          IDENTIDAD_SERVICIO_PASSWORD: ${{ secrets.IDENTIDAD_SERVICIO_PASSWORD }}
+          POSTGRES_CAMPANA_PASSWORD: ${{ secrets.POSTGRES_CAMPANA_PASSWORD }}
+          CAMPANA_PROPIETARIO_PASSWORD: ${{ secrets.CAMPANA_PROPIETARIO_PASSWORD }}
+          CAMPANA_SERVICIO_PASSWORD: ${{ secrets.CAMPANA_SERVICIO_PASSWORD }}
         run: |
-          chmod +x init/roles.sh
-          # Ejecutar inicialización de roles y esquemas
-          ./init/roles.sh
+          set -euo pipefail
+
+          deploy_database() {
+            local service="$1"
+            local db="$2"
+            local image="$3"
+            local superuser_password="$4"
+            local owner_password="$5"
+            local role_service_password="$6"
+            local network="redvital_${service}_data"
+            local volume="redvital_${service}_data"
+            local prefix="$service"
+
+            docker network inspect "$network" >/dev/null 2>&1 || docker network create "$network"
+            docker volume create "$volume" >/dev/null
+
+            docker rm -f "db-$service" >/dev/null 2>&1 || true
+            docker run -d \
+              --name "db-$service" \
+              --restart unless-stopped \
+              --network "$network" \
+              --network-alias "db-$service" \
+              --mount "type=volume,source=$volume,target=/var/lib/postgresql/data" \
+              -e POSTGRES_DB="$db" \
+              -e POSTGRES_PASSWORD="$superuser_password" \
+              -e ROLES_PREFIJO="$prefix" \
+              -e ROLES_PASSWORD_PROPIETARIO="$owner_password" \
+              -e ROLES_PASSWORD_SERVICIO="$role_service_password" \
+              "$image"
+
+            for attempt in $(seq 1 60); do
+              if docker exec "db-$service" pg_isready -U postgres -d "$db" >/dev/null 2>&1; then
+                echo "Base $db desplegada y lista."
+                return
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                docker logs "db-$service"
+                echo "La base $db no quedó lista." >&2
+                return 1
+              fi
+              sleep 2
+            done
+          }
+
+          deploy_database identidad db_identidad "redvital-db-identidad:$GITHUB_SHA" \
+            "$POSTGRES_IDENTIDAD_PASSWORD" "$IDENTIDAD_PROPIETARIO_PASSWORD" "$IDENTIDAD_SERVICIO_PASSWORD"
+          deploy_database campana db_campana "redvital-db-campana:$GITHUB_SHA" \
+            "$POSTGRES_CAMPANA_PASSWORD" "$CAMPANA_PROPIETARIO_PASSWORD" "$CAMPANA_SERVICIO_PASSWORD"
