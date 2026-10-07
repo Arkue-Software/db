@@ -95,7 +95,7 @@ jobs:
     name: Desplegar en la VM Ubuntu
     runs-on: self-hosted
     needs: ci
-    if: github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/heads/release/')
     steps:
       - name: Descargar el código
         uses: actions/checkout@v4
