@@ -1,0 +1,58 @@
+name: CI/CD Pipeline en Self-Hosted VM
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  # ==========================================
+  # FASE 1: CI (Integración Continua y Pruebas)
+  # ==========================================
+  ci-tests:
+    runs-on: self-hosted
+    steps:
+      - name: 📥 Checkout del código
+        uses: actions/checkout@v4
+
+      - name: 🔨 Construir imágenes de Docker (Prueba de build)
+        run: |
+          docker build -t app-campanas-test ./campanas
+          docker build -t app-identidad-test ./identidad
+
+      - name: 🧪 Ejecutar pruebas (verificar-fase1.sh)
+        run: |
+          chmod +x pruebas/verificar-fase1.sh
+          # Ejecuta el script de pruebas de tu proyecto
+          ./pruebas/verificar-fase1.sh
+
+  # ==========================================
+  # FASE 2: CD (Despliegue Continuo)
+  # ==========================================
+  cd-deploy:
+    runs-on: self-hosted
+    needs: ci-tests # IMPORTANTE: Solo se ejecuta si el job "ci-tests" fue exitoso
+    
+    steps:
+      - name: 📥 Checkout del código
+        uses: actions/checkout@v4
+
+      - name: 🛑 Detener y limpiar contenedores anteriores
+        run: |
+          docker stop campanas_app identidad_app || true
+          docker rm campanas_app identidad_app || true
+
+      - name: 🚀 Desplegar contenedores a producción
+        run: |
+          # Usamos las imágenes que sabemos que construyeron bien
+          docker build -t app-campanas ./campanas
+          docker build -t app-identidad ./identidad
+          
+          # Levantar los contenedores
+          docker run -d --name campanas_app -p 8080:80 app-campanas
+          docker run -d --name identidad_app -p 8081:80 app-identidad
+
+      - name: ⚙️ Configurar base de datos y roles
+        run: |
+          chmod +x init/roles.sh
+          # Ejecutar inicialización de roles y esquemas
+          ./init/roles.sh
