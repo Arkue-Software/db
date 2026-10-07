@@ -22,6 +22,11 @@ servicio debe conectarse solo a su red de datos correspondiente y usar el
 nombre del servicio PostgreSQL como host (`db-identidad` o `db-campana`) en el
 puerto 5432. No conectes Gateway ni otros servicios a esas redes de datos.
 
+Identidad y Campañas se construyen como imágenes independientes desde
+`identidad/Dockerfile` y `campanas/Dockerfile`, ambas basadas en PostgreSQL 16.
+Docker Compose las construye al levantarlas; las migraciones Flyway se ejecutan
+en sus contenedores separados.
+
 ## Roles
 
 Identidad y Campañas usan roles distintos por base:
@@ -39,7 +44,20 @@ operativos, no una garantía contra un administrador que pueda cambiar el
 esquema o deshabilitar los disparadores. Una protección contra manipulación por
 administradores requiere exportación a un destino externo e independiente.
 
-## Levantar en local
+## Levantar solo las bases de Identidad y Campañas
+
+Desde la raíz del repositorio:
+
+```powershell
+docker compose up
+```
+
+Este Compose predeterminado construye y levanta los dos contenedores. Usa
+credenciales predeterminadas solo para desarrollo local; puedes sobrescribirlas
+con variables de entorno o en un archivo `.env`. No publica los puertos de las
+bases en el host.
+
+## Levantar la pila completa y migrar
 
 PowerShell:
 

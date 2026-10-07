@@ -1,0 +1,7 @@
+.git
+.github
+secretos
+**/bin
+**/obj
+*.dump
+*.sql.gz
